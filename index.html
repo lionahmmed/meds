@@ -2,228 +2,217 @@
 <html>
 <head>
   <title>Medicine Scheduler Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <style>
-    body {
-      font-family: Arial;
-      margin: 30px;
-    }
-    label, input, button {
-      font-size: 16px;
-      margin: 5px 0;
-    }
-    input {
-      padding: 6px;
-      width: 250px;
-    }
-    button {
-      padding: 8px 16px;
-    }
-    #status {
-      margin-top: 10px;
-      font-weight: bold;
-    }
-    table {
-      margin-top: 30px;
-      border-collapse: collapse;
-      width: 100%;
-    }
-    th, td {
-      border: 1px solid #ccc;
-      padding: 8px;
-      font-size: 15px;
-    }
-    th {
-      background-color: #f0f0f0;
-      cursor: pointer;
-    }
+    body { font-family: Arial; margin: 30px; }
+    label, input, select, button { font-size: 16px; margin: 5px 0; }
+    input, select { padding: 6px; width: 250px; }
+    button { padding: 8px 16px; margin-right: 5px; }
+    table { margin-top: 20px; border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ccc; padding: 8px; font-size: 15px; text-align: center; }
+    th { background-color: #f0f0f0; }
+    #searchInput { margin-top: 20px; padding: 8px; width: 300px; font-size: 16px; }
+    .pagination button { margin: 2px; padding: 4px 10px; }
+    .actions button { padding: 5px 10px; font-size: 12px; }
+    #status { margin-top: 10px; font-weight: bold; color: green; }
   </style>
 </head>
 <body>
 
-  <h2>Medicine Schedule Uploader</h2>
+<h2>Medicine Scheduler Dashboard</h2>
 
-  <label>Person Name:</label><br>
-  <input type="text" id="person"><br>
+<!-- Uploader Form -->
+<label>Person Name:</label><br>
+<input type="text" id="person"><br>
+<label>Medicine:</label><br>
+<input type="text" id="medicine"><br>
+<label>Schedule Time:</label><br>
+<input type="datetime-local" id="schedule"><br>
+<button onclick="sendSchedule()">➕ Submit Schedule</button>
+<span id="status"></span>
 
-  <label>Medicine:</label><br>
-  <input type="text" id="medicine"><br>
+<hr>
 
-  <label>Schedule Time:</label><br>
-  <input type="datetime-local" id="schedule"><br>
+<!-- Controls -->
+<input type="text" id="searchInput" onkeyup="filterTable()" placeholder="🔍 Search...">
+<button onclick="exportExcel()">📥 Export to Excel</button>
+<button onclick="loadSchedule()">🔄 Refresh</button>
+<br><br>
+<label>Auto-refresh (sec): </label><input type="number" id="refreshTime" value="60" onchange="restartAutoRefresh()" style="width:60px">
 
-  <button onclick="sendSchedule()">Submit</button>
-  <p id="status"></p>
+<!-- Table -->
+<table id="dataTable">
+  <thead>
+    <tr>
+      <th>Schedule Time</th>
+      <th>Person Name</th>
+      <th>Medicine</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody id="scheduleTable"></tbody>
+</table>
 
-  <h2>Schedule Table</h2>
-  <button onclick="loadSchedule()">🔄 Refresh</button>
-  <button onclick="exportCSV()">📤 Export CSV</button>
-  <table id="dataTable">
-    <thead>
-      <tr>
-        <th onclick="sortTable(0)">Schedule Time</th>
-        <th onclick="sortTable(1)">Person Name</th>
-        <th onclick="sortTable(2)">Medicine</th>
-      </tr>
-    </thead>
-    <tbody id="scheduleTable"></tbody>
-  </table>
+<script>
+const channelID = '3008675';
+const apiKey = 'ALB6HK9T805Q8WJQ';
+const readAPIKey = 'FKJ1TPALPIP7H9S8'; // Optional if private
+let fullData = [], timer;
 
-  <script>
-    const channelID = '3008675'; // Change to your ThingSpeak channel
-    const readAPIKey = 'FKJ1TPALPIP7H9S8';       // If private channel
-    const writeAPIKey = 'ALB6HK9T805Q8WJQ'; // Replace with your Write API key
+// ===== TLV + ASCII Encoding =====
+function asciiEncode(str) {
+  return Array.from(str).map(c => {
+    const code = c.charCodeAt(0);
+    return code < 100 ? ('0' + code).slice(-2) : '' + code;
+  }).join('');
+}
+function asciiDecode(str) {
+  let result = '', i = 0;
+  while (i < str.length) {
+    const sub = str.slice(i, i + 3);
+    const ch = String.fromCharCode(parseInt(sub));
+    result += ch;
+    i += 3;
+  }
+  return result;
+}
+function toTLV(epoch, name, med) {
+  const t1 = `T01L${epoch.toString().length}V${epoch}`;
+  const t2 = `T02L${asciiEncode(name).length}V${asciiEncode(name)}`;
+  const t3 = `T03L${asciiEncode(med).length}V${asciiEncode(med)}`;
+  return t1 + t2 + t3;
+}
+function parseTLV(tlv) {
+  let i = 0, data = {};
+  while (i < tlv.length) {
+    const tag = tlv.slice(i, i + 3); i += 3;
+    const lenEnd = tlv.indexOf('V', i);
+    const len = parseInt(tlv.slice(i + 1, lenEnd));
+    i = lenEnd + 1;
+    const value = tlv.slice(i, i + len); i += len;
+    if (tag === 'T01') data.epoch = value;
+    else if (tag === 'T02') data.person = asciiDecode(value);
+    else if (tag === 'T03') data.medicine = asciiDecode(value);
+  }
+  return data;
+}
 
-    function toAscii(str) {
-      return str.split('').map(c => c.charCodeAt(0)).join('');
-    }
+// ===== Form Submission =====
+function sendSchedule() {
+  const person = document.getElementById('person').value.trim();
+  const medicine = document.getElementById('medicine').value.trim();
+  const scheduleInput = document.getElementById('schedule').value;
+  const status = document.getElementById('status');
 
-    function sendSchedule() {
-      const person = document.getElementById('person').value.trim();
-      const medicine = document.getElementById('medicine').value.trim();
-      const scheduleInput = document.getElementById('schedule').value;
-      const status = document.getElementById('status');
+  if (!person || !medicine || !scheduleInput) {
+    status.textContent = "❌ Fill all fields!";
+    return;
+  }
 
-      if (!person || !medicine || !scheduleInput) {
-        status.textContent = "Please fill in all fields.";
-        return;
+  const epoch = Math.floor(new Date(scheduleInput).getTime() / 1000);
+  const tlv = toTLV(epoch, person, medicine);
+  const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${encodeURIComponent(tlv)}`;
+
+  fetch(url)
+    .then(res => res.text())
+    .then(data => {
+      if (parseInt(data) > 0) {
+        status.textContent = "✅ Uploaded! ID: " + data;
+        document.getElementById('person').value = '';
+        document.getElementById('medicine').value = '';
+        document.getElementById('schedule').value = '';
+        loadSchedule();
+      } else {
+        status.textContent = "❌ Upload failed!";
       }
+    });
+}
 
-      const epoch = Math.floor(new Date(scheduleInput).getTime() / 1000);
-      const personAscii = toAscii(person);
-      const medicineAscii = toAscii(medicine);
+// ===== Load + Display Schedule =====
+function loadSchedule() {
+  const url = `https://api.thingspeak.com/channels/${channelID}/fields/1.json?results=100${readAPIKey ? '&api_key=' + readAPIKey : ''}`;
+  fetch(url).then(r => r.json()).then(json => {
+    fullData = json.feeds.reverse().map((f, i) => {
+      const parsed = parseTLV(f.field1 || '');
+      return {
+        time: new Date(+parsed.epoch * 1000).toLocaleString(),
+        person: parsed.person || '',
+        medicine: parsed.medicine || '',
+        entry_id: f.entry_id,
+        raw_epoch: parsed.epoch
+      };
+    }).filter(d => d.person && d.medicine);
+    renderTable(fullData);
+  });
+}
 
-      const tlv =
-        `T01L10V${epoch}` +
-        `T02L${personAscii.length}V${personAscii}` +
-        `T03L${medicineAscii.length}V${medicineAscii}`;
+function renderTable(data) {
+  const table = document.getElementById('scheduleTable');
+  table.innerHTML = '';
+  data.forEach((d, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="datetime-local" value="${toDatetimeLocal(+d.raw_epoch * 1000)}" onchange="editField(${i}, 'time', this.value)"></td>
+      <td><input value="${d.person}" onchange="editField(${i}, 'person', this.value)"></td>
+      <td><input value="${d.medicine}" onchange="editField(${i}, 'medicine', this.value)"></td>
+      <td class="actions">
+        <button onclick="deleteEntry(${i})">🗑️ Delete</button>
+      </td>`;
+    table.appendChild(tr);
+  });
+}
 
-      const url = `https://api.thingspeak.com/update?api_key=${writeAPIKey}&field1=${tlv}`;
+// ===== Editing =====
+function editField(index, field, value) {
+  if (field === 'time') {
+    fullData[index].raw_epoch = Math.floor(new Date(value).getTime() / 1000);
+    fullData[index].time = new Date(fullData[index].raw_epoch * 1000).toLocaleString();
+  } else {
+    fullData[index][field] = value;
+  }
+}
 
-      fetch(url)
-        .then(res => res.text())
-        .then(data => {
-          status.textContent = parseInt(data) > 0 ? `✅ Uploaded. Entry ID: ${data}` : '❌ Upload failed.';
-          loadSchedule();
-        })
-        .catch(err => status.textContent = `⚠️ Error: ${err}`);
-    }
+// ===== Deletion (by overwriting field with empty string) =====
+function deleteEntry(index) {
+  if (!confirm("Delete this entry?")) return;
+  const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=`;
+  fetch(url).then(() => {
+    fullData.splice(index, 1);
+    renderTable(fullData);
+  });
+}
 
-    function decodeTLV(tlv) {
-      const data = {};
-      let i = 0;
+// ===== Helpers =====
+function filterTable() {
+  const v = document.getElementById('searchInput').value.toLowerCase();
+  const f = fullData.filter(d =>
+    d.person.toLowerCase().includes(v) ||
+    d.medicine.toLowerCase().includes(v) ||
+    d.time.toLowerCase().includes(v));
+  renderTable(f);
+}
+function exportExcel() {
+  const data = [["Time", "Name", "Medicine"]];
+  fullData.forEach(d => data.push([d.time, d.person, d.medicine]));
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  XLSX.utils.book_append_sheet(wb, ws, "Schedule");
+  XLSX.writeFile(wb, "Medicine_Schedule.xlsx");
+}
+function toDatetimeLocal(ts) {
+  const d = new Date(ts);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+}
+function restartAutoRefresh() {
+  clearInterval(timer);
+  const sec = parseInt(document.getElementById('refreshTime').value);
+  timer = setInterval(loadSchedule, sec * 1000);
+}
+window.onload = () => {
+  loadSchedule();
+  restartAutoRefresh();
+};
+</script>
 
-      while (i < tlv.length) {
-        const tag = tlv.substring(i, i + 3); i += 3;
-        const lenIndex = tlv.indexOf('V', i);
-        const length = parseInt(tlv.substring(i + 1, lenIndex)); // Lx part
-        i = lenIndex + 1;
-        const value = tlv.substring(i, i + length);
-        i += length;
-
-        if (tag === 'T01') data.epoch = value;
-        else if (tag === 'T02') data.person = decodeAsciiDigits(value);
-        else if (tag === 'T03') data.medicine = decodeAsciiDigits(value);
-      }
-      return data;
-    }
-
-    function decodeAsciiDigits(digits) {
-      let result = "", i = 0;
-      while (i < digits.length) {
-        let code = parseInt(digits.substring(i, i + 3));
-        if (code >= 32 && code <= 126) {
-          result += String.fromCharCode(code);
-          i += 3;
-        } else {
-          code = parseInt(digits.substring(i, i + 2));
-          result += String.fromCharCode(code);
-          i += 2;
-        }
-      }
-      return result;
-    }
-
-    function loadSchedule() {
-      const url = `https://api.thingspeak.com/channels/${channelID}/fields/1.json?results=50${readAPIKey ? '&api_key=' + readAPIKey : ''}`;
-
-      fetch(url)
-        .then(res => res.json())
-        .then(json => {
-          const tbody = document.getElementById('scheduleTable');
-          tbody.innerHTML = '';
-
-          const rows = [];
-
-          json.feeds.reverse().forEach(feed => {
-            const tlv = feed.field1;
-            if (!tlv || !tlv.startsWith("T01")) return;
-
-            const data = decodeTLV(tlv);
-            const date = new Date(parseInt(data.epoch) * 1000).toLocaleString();
-
-            rows.push([date, data.person, data.medicine]);
-          });
-
-          for (const row of rows) {
-            tbody.innerHTML += `<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`;
-          }
-        });
-    }
-
-    function sortTable(colIndex) {
-      const table = document.getElementById("dataTable");
-      let switching = true;
-      let shouldSwitch, i;
-      let dir = "asc", switchCount = 0;
-
-      while (switching) {
-        switching = false;
-        let rows = table.rows;
-
-        for (i = 1; i < rows.length - 1; i++) {
-          shouldSwitch = false;
-          const x = rows[i].getElementsByTagName("TD")[colIndex];
-          const y = rows[i + 1].getElementsByTagName("TD")[colIndex];
-
-          if ((dir === "asc" && x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) ||
-              (dir === "desc" && x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase())) {
-            shouldSwitch = true;
-            break;
-          }
-        }
-
-        if (shouldSwitch) {
-          rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
-          switching = true;
-          switchCount++;
-        } else {
-          if (switchCount === 0 && dir === "asc") {
-            dir = "desc";
-            switching = true;
-          }
-        }
-      }
-    }
-
-    function exportCSV() {
-      const rows = document.querySelectorAll("table tr");
-      const csv = [];
-
-      rows.forEach(row => {
-        const cols = row.querySelectorAll("td, th");
-        const rowData = [];
-        cols.forEach(col => rowData.push('"' + col.innerText.replace(/"/g, '""') + '"'));
-        csv.push(rowData.join(","));
-      });
-
-      const blob = new Blob([csv.join("\n")], { type: 'text/csv' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = "schedule_data.csv";
-      a.click();
-    }
-
-    window.onload = loadSchedule;
-  </script>
 </body>
 </html>
