@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Medicine Scheduler</title>
+  <style>
+    body {
+      font-family: Arial;
+      margin: 30px;
+    }
+    label, input, select, button {
+      font-size: 16px;
+      margin: 5px 0;
+    }
+    input, select {
+      padding: 6px;
+      width: 250px;
+    }
+    button {
+      padding: 8px 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Medicine Schedule Uploader</h2>
+
+  <label>Person Name:</label><br>
+  <input type="text" id="person"><br>
+
+  <label>Medicine:</label><br>
+  <input type="text" id="medicine"><br>
+
+  <label>Schedule Time:</label><br>
+  <input type="datetime-local" id="schedule"><br>
+
+  <button onclick="sendSchedule()">Submit</button>
+
+  <p id="status"></p>
+
+  <script>
+    function sendSchedule() {
+      const person = document.getElementById('person').value.trim();
+      const medicine = document.getElementById('medicine').value.trim();
+      const scheduleInput = document.getElementById('schedule').value;
+      const status = document.getElementById('status');
+
+      if (!person || !medicine || !scheduleInput) {
+        status.textContent = "Please fill in all fields.";
+        return;
+      }
+
+      const epoch = Math.floor(new Date(scheduleInput).getTime() / 1000);
+
+      // Create compact JSON-like string to send
+      const payload = JSON.stringify({
+        person: person,
+        medicine: medicine,
+        time: epoch
+      });
+
+      const apiKey = 'ALB6HK9T805Q8WJQ';
+      const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${encodeURIComponent(payload)}`;
+
+      fetch(url)
+        .then(response => response.text())
+        .then(data => {
+          if (data > 0) {
+            status.textContent = `Schedule uploaded! Entry ID: ${data}`;
+          } else {
+            status.textContent = `Failed to upload. Please try again.`;
+          }
+        })
+        .catch(err => {
+          status.textContent = `Error: ${err}`;
+        });
+    }
+  </script>
+
+</body>
+</html>
