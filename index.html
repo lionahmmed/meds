@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Medicine Scheduler</title>
+  <title>Medicine Scheduler Dashboard</title>
   <style>
     body {
       font-family: Arial;
@@ -28,12 +28,13 @@
       width: 100%;
     }
     th, td {
-      border: 1px solid #ddd;
+      border: 1px solid #ccc;
       padding: 8px;
       font-size: 15px;
     }
     th {
-      background-color: #f2f2f2;
+      background-color: #f0f0f0;
+      cursor: pointer;
     }
   </style>
 </head>
@@ -53,22 +54,24 @@
   <button onclick="sendSchedule()">Submit</button>
   <p id="status"></p>
 
-  <h2>Schedule List</h2>
-  <button onclick="loadSchedule()">🔄 Refresh List</button>
-  <table>
+  <h2>Schedule Table</h2>
+  <button onclick="loadSchedule()">🔄 Refresh</button>
+  <button onclick="exportCSV()">📤 Export CSV</button>
+  <table id="dataTable">
     <thead>
       <tr>
-        <th>Schedule Time</th>
-        <th>Person Name</th>
-        <th>Medicine</th>
+        <th onclick="sortTable(0)">Schedule Time</th>
+        <th onclick="sortTable(1)">Person Name</th>
+        <th onclick="sortTable(2)">Medicine</th>
       </tr>
     </thead>
     <tbody id="scheduleTable"></tbody>
   </table>
 
   <script>
-    const channelID = '3008675'; // 🔁 Change this to your channel ID
-    const readAPIKey = 'FKJ1TPALPIP7H9S8';       // 🔒 Optional: add your Read API Key if private
+    const channelID = '1234567'; // Change to your ThingSpeak channel
+    const readAPIKey = '';       // If private channel
+    const writeAPIKey = 'ALB6HK9T805Q8WJQ'; // Replace with your Write API key
 
     function toAscii(str) {
       return str.split('').map(c => c.charCodeAt(0)).join('');
@@ -85,94 +88,142 @@
         return;
       }
 
-      const scheduleTime = new Date(scheduleInput).getTime();
-      if (isNaN(scheduleTime) || scheduleTime < Date.now()) {
-        status.textContent = "Schedule time must be valid and in the future.";
-        return;
-      }
+      const epoch = Math.floor(new Date(scheduleInput).getTime() / 1000);
+      const personAscii = toAscii(person);
+      const medicineAscii = toAscii(medicine);
 
-      const epoch = Math.floor(scheduleTime / 1000);
-      const asciiName = toAscii(person);
-      const asciiMedicine = toAscii(medicine);
+      const tlv =
+        `T01L10V${epoch}` +
+        `T02L${personAscii.length}V${personAscii}` +
+        `T03L${medicineAscii.length}V${medicineAscii}`;
 
-      const tlvString = `${epoch}${asciiName}${asciiMedicine}`;
-      const apiKey = 'ALB6HK9T805Q8WJQ';  // Replace with your ThingSpeak Write API key
-
-      const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${tlvString}`;
+      const url = `https://api.thingspeak.com/update?api_key=${writeAPIKey}&field1=${tlv}`;
 
       fetch(url)
-        .then(response => response.text())
+        .then(res => res.text())
         .then(data => {
-          if (parseInt(data) > 0) {
-            status.textContent = `✅ Schedule uploaded! Entry ID: ${data}`;
-            loadSchedule(); // Refresh the table
-          } else {
-            status.textContent = `❌ Failed to upload. Please try again.`;
-          }
+          status.textContent = parseInt(data) > 0 ? `✅ Uploaded. Entry ID: ${data}` : '❌ Upload failed.';
+          loadSchedule();
         })
-        .catch(err => {
-          status.textContent = `⚠️ Error: ${err}`;
-        });
+        .catch(err => status.textContent = `⚠️ Error: ${err}`);
     }
 
-    function decodeAscii(asciiStr) {
-      let result = "";
-      for (let i = 0; i < asciiStr.length;) {
-        let code = parseInt(asciiStr.substring(i, i + 2));
-        if (code < 32) {
-          code = parseInt(asciiStr.substring(i, i + 3));
+    function decodeTLV(tlv) {
+      const data = {};
+      let i = 0;
+
+      while (i < tlv.length) {
+        const tag = tlv.substring(i, i + 3); i += 3;
+        const lenIndex = tlv.indexOf('V', i);
+        const length = parseInt(tlv.substring(i + 1, lenIndex)); // Lx part
+        i = lenIndex + 1;
+        const value = tlv.substring(i, i + length);
+        i += length;
+
+        if (tag === 'T01') data.epoch = value;
+        else if (tag === 'T02') data.person = decodeAsciiDigits(value);
+        else if (tag === 'T03') data.medicine = decodeAsciiDigits(value);
+      }
+      return data;
+    }
+
+    function decodeAsciiDigits(digits) {
+      let result = "", i = 0;
+      while (i < digits.length) {
+        let code = parseInt(digits.substring(i, i + 3));
+        if (code >= 32 && code <= 126) {
+          result += String.fromCharCode(code);
           i += 3;
         } else {
+          code = parseInt(digits.substring(i, i + 2));
+          result += String.fromCharCode(code);
           i += 2;
         }
-        result += String.fromCharCode(code);
       }
       return result;
     }
 
     function loadSchedule() {
-      const url = `https://api.thingspeak.com/channels/${channelID}/fields/1.json?results=20${readAPIKey ? '&api_key=' + readAPIKey : ''}`;
+      const url = `https://api.thingspeak.com/channels/${channelID}/fields/1.json?results=50${readAPIKey ? '&api_key=' + readAPIKey : ''}`;
+
       fetch(url)
-        .then(response => response.json())
-        .then(data => {
-          const entries = data.feeds;
+        .then(res => res.json())
+        .then(json => {
           const tbody = document.getElementById('scheduleTable');
           tbody.innerHTML = '';
 
-          entries.reverse().forEach(entry => {
-            const field1 = entry.field1;
-            if (!field1 || field1.length < 10) return;
+          const rows = [];
 
-            const epoch = parseInt(field1.substring(0, 10));
-            const remaining = field1.substring(10);
+          json.feeds.reverse().forEach(feed => {
+            const tlv = feed.field1;
+            if (!tlv || !tlv.startsWith("T01")) return;
 
-            // Guess split between name and medicine: half-half or based on known lengths
-            const splitIndex = Math.floor(remaining.length / 2);
-            const nameAscii = remaining.substring(0, splitIndex);
-            const medicineAscii = remaining.substring(splitIndex);
+            const data = decodeTLV(tlv);
+            const date = new Date(parseInt(data.epoch) * 1000).toLocaleString();
 
-            const person = decodeAscii(nameAscii);
-            const medicine = decodeAscii(medicineAscii);
-            const date = new Date(epoch * 1000);
-            const formattedDate = date.toLocaleString();
-
-            const row = `<tr>
-              <td>${formattedDate}</td>
-              <td>${person}</td>
-              <td>${medicine}</td>
-            </tr>`;
-
-            tbody.innerHTML += row;
+            rows.push([date, data.person, data.medicine]);
           });
-        })
-        .catch(err => {
-          console.error("Error loading schedule:", err);
+
+          for (const row of rows) {
+            tbody.innerHTML += `<tr><td>${row[0]}</td><td>${row[1]}</td><td>${row[2]}</td></tr>`;
+          }
         });
     }
 
-    // Load schedule on page load
+    function sortTable(colIndex) {
+      const table = document.getElementById("dataTable");
+      let switching = true;
+      let shouldSwitch, i;
+      let dir = "asc", switchCount = 0;
+
+      while (switching) {
+        switching = false;
+        let rows = table.rows;
+
+        for (i = 1; i < rows.length - 1; i++) {
+          shouldSwitch = false;
+          const x = rows[i].getElementsByTagName("TD")[colIndex];
+          const y = rows[i + 1].getElementsByTagName("TD")[colIndex];
+
+          if ((dir === "asc" && x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) ||
+              (dir === "desc" && x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase())) {
+            shouldSwitch = true;
+            break;
+          }
+        }
+
+        if (shouldSwitch) {
+          rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+          switching = true;
+          switchCount++;
+        } else {
+          if (switchCount === 0 && dir === "asc") {
+            dir = "desc";
+            switching = true;
+          }
+        }
+      }
+    }
+
+    function exportCSV() {
+      const rows = document.querySelectorAll("table tr");
+      const csv = [];
+
+      rows.forEach(row => {
+        const cols = row.querySelectorAll("td, th");
+        const rowData = [];
+        cols.forEach(col => rowData.push('"' + col.innerText.replace(/"/g, '""') + '"'));
+        csv.push(rowData.join(","));
+      });
+
+      const blob = new Blob([csv.join("\n")], { type: 'text/csv' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = "schedule_data.csv";
+      a.click();
+    }
+
     window.onload = loadSchedule;
   </script>
-
 </body>
 </html>
