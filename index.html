@@ -7,11 +7,11 @@
       font-family: Arial;
       margin: 30px;
     }
-    label, input, select, button {
+    label, input, button {
       font-size: 16px;
       margin: 5px 0;
     }
-    input, select {
+    input {
       padding: 6px;
       width: 250px;
     }
@@ -19,8 +19,21 @@
       padding: 8px 16px;
     }
     #status {
-      margin-top: 15px;
+      margin-top: 10px;
       font-weight: bold;
+    }
+    table {
+      margin-top: 30px;
+      border-collapse: collapse;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      font-size: 15px;
+    }
+    th {
+      background-color: #f2f2f2;
     }
   </style>
 </head>
@@ -38,10 +51,25 @@
   <input type="datetime-local" id="schedule"><br>
 
   <button onclick="sendSchedule()">Submit</button>
-
   <p id="status"></p>
 
+  <h2>Schedule List</h2>
+  <button onclick="loadSchedule()">🔄 Refresh List</button>
+  <table>
+    <thead>
+      <tr>
+        <th>Schedule Time</th>
+        <th>Person Name</th>
+        <th>Medicine</th>
+      </tr>
+    </thead>
+    <tbody id="scheduleTable"></tbody>
+  </table>
+
   <script>
+    const channelID = '3008675'; // 🔁 Change this to your channel ID
+    const readAPIKey = 'FKJ1TPALPIP7H9S8';       // 🔒 Optional: add your Read API Key if private
+
     function toAscii(str) {
       return str.split('').map(c => c.charCodeAt(0)).join('');
     }
@@ -68,8 +96,8 @@
       const asciiMedicine = toAscii(medicine);
 
       const tlvString = `${epoch}${asciiName}${asciiMedicine}`;
+      const apiKey = 'ALB6HK9T805Q8WJQ';  // Replace with your ThingSpeak Write API key
 
-      const apiKey = 'ALB6HK9T805Q8WJQ';  // Replace with your actual ThingSpeak API key
       const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${tlvString}`;
 
       fetch(url)
@@ -77,6 +105,7 @@
         .then(data => {
           if (parseInt(data) > 0) {
             status.textContent = `✅ Schedule uploaded! Entry ID: ${data}`;
+            loadSchedule(); // Refresh the table
           } else {
             status.textContent = `❌ Failed to upload. Please try again.`;
           }
@@ -85,6 +114,64 @@
           status.textContent = `⚠️ Error: ${err}`;
         });
     }
+
+    function decodeAscii(asciiStr) {
+      let result = "";
+      for (let i = 0; i < asciiStr.length;) {
+        let code = parseInt(asciiStr.substring(i, i + 2));
+        if (code < 32) {
+          code = parseInt(asciiStr.substring(i, i + 3));
+          i += 3;
+        } else {
+          i += 2;
+        }
+        result += String.fromCharCode(code);
+      }
+      return result;
+    }
+
+    function loadSchedule() {
+      const url = `https://api.thingspeak.com/channels/${channelID}/fields/1.json?results=20${readAPIKey ? '&api_key=' + readAPIKey : ''}`;
+      fetch(url)
+        .then(response => response.json())
+        .then(data => {
+          const entries = data.feeds;
+          const tbody = document.getElementById('scheduleTable');
+          tbody.innerHTML = '';
+
+          entries.reverse().forEach(entry => {
+            const field1 = entry.field1;
+            if (!field1 || field1.length < 10) return;
+
+            const epoch = parseInt(field1.substring(0, 10));
+            const remaining = field1.substring(10);
+
+            // Guess split between name and medicine: half-half or based on known lengths
+            const splitIndex = Math.floor(remaining.length / 2);
+            const nameAscii = remaining.substring(0, splitIndex);
+            const medicineAscii = remaining.substring(splitIndex);
+
+            const person = decodeAscii(nameAscii);
+            const medicine = decodeAscii(medicineAscii);
+            const date = new Date(epoch * 1000);
+            const formattedDate = date.toLocaleString();
+
+            const row = `<tr>
+              <td>${formattedDate}</td>
+              <td>${person}</td>
+              <td>${medicine}</td>
+            </tr>`;
+
+            tbody.innerHTML += row;
+          });
+        })
+        .catch(err => {
+          console.error("Error loading schedule:", err);
+        });
+    }
+
+    // Load schedule on page load
+    window.onload = loadSchedule;
   </script>
 
 </body>
