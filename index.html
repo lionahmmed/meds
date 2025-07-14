@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Medicine Scheduler</title>
+  <style>
+    body {
+      font-family: Arial;
+      margin: 30px;
+    }
+    label, input, select, button {
+      font-size: 16px;
+      margin: 5px 0;
+    }
+    input, select {
+      padding: 6px;
+      width: 250px;
+    }
+    button {
+      padding: 8px 16px;
+    }
+    #status {
+      margin-top: 15px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Medicine Schedule Uploader</h2>
+
+  <label>Person Name:</label><br>
+  <input type="text" id="person"><br>
+
+  <label>Medicine:</label><br>
+  <input type="text" id="medicine"><br>
+
+  <label>Schedule Time:</label><br>
+  <input type="datetime-local" id="schedule"><br>
+
+  <button onclick="sendSchedule()">Submit</button>
+
+  <p id="status"></p>
+
+  <script>
+    function toAscii(str) {
+      return str.split('').map(c => c.charCodeAt(0)).join('');
+    }
+
+    function sendSchedule() {
+      const person = document.getElementById('person').value.trim();
+      const medicine = document.getElementById('medicine').value.trim();
+      const scheduleInput = document.getElementById('schedule').value;
+      const status = document.getElementById('status');
+
+      if (!person || !medicine || !scheduleInput) {
+        status.textContent = "Please fill in all fields.";
+        return;
+      }
+
+      const scheduleTime = new Date(scheduleInput).getTime();
+      if (isNaN(scheduleTime) || scheduleTime < Date.now()) {
+        status.textContent = "Schedule time must be valid and in the future.";
+        return;
+      }
+
+      const epoch = Math.floor(scheduleTime / 1000);
+      const asciiName = toAscii(person);
+      const asciiMedicine = toAscii(medicine);
+
+      const tlvString = `${epoch}${asciiName}${asciiMedicine}`;
+
+      const apiKey = 'ALB6HK9T805Q8WJQ';  // Replace with your actual ThingSpeak API key
+      const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${tlvString}`;
+
+      fetch(url)
+        .then(response => response.text())
+        .then(data => {
+          if (parseInt(data) > 0) {
+            status.textContent = `✅ Schedule uploaded! Entry ID: ${data}`;
+          } else {
+            status.textContent = `❌ Failed to upload. Please try again.`;
+          }
+        })
+        .catch(err => {
+          status.textContent = `⚠️ Error: ${err}`;
+        });
+    }
+  </script>
+
+</body>
+</html>
