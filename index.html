@@ -1,277 +1,185 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Medicine Scheduler Dashboard</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <title>Medicine Scheduler</title>
   <style>
-    body { font-family: Arial; margin: 30px; }
-    label, input, select, button { font-size: 16px; margin: 5px 0; }
-    input, select { padding: 6px; width: 250px; }
-    button { padding: 8px 16px; margin-right: 5px; }
-    table { margin-top: 20px; border-collapse: collapse; width: 100%; }
-    th, td { border: 1px solid #ccc; padding: 8px; font-size: 15px; text-align: center; }
-    th { background-color: #f0f0f0; }
-    #searchInput { margin-top: 20px; padding: 8px; width: 300px; font-size: 16px; }
-    .actions button { padding: 5px 10px; font-size: 12px; }
-    #status { margin-top: 10px; font-weight: bold; color: green; }
+    body {
+      font-family: Arial;
+      margin: 30px;
+    }
+    label, input, select, button {
+      font-size: 16px;
+      margin: 5px 0;
+    }
+    input, select {
+      padding: 6px;
+      width: 250px;
+    }
+    button {
+      padding: 8px 16px;
+    }
+    table {
+      margin-top: 30px;
+      border-collapse: collapse;
+      width: 100%;
+    }
+    th, td {
+      padding: 8px 12px;
+      border: 1px solid #ccc;
+    }
   </style>
 </head>
 <body>
 
-<h2>Medicine Scheduler Dashboard</h2>
+  <h2>Medicine Schedule Uploader</h2>
 
-<label>Person Name:</label><br>
-<input type="text" id="person"><br>
-<label>Medicine:</label><br>
-<input type="text" id="medicine"><br>
-<label>Schedule Time:</label><br>
-<input type="datetime-local" id="schedule"><br>
+  <label>Person Name:</label><br>
+  <input type="text" id="person"><br>
 
-<label>Recurrence:</label><br>
-<select id="recurrenceType" onchange="toggleDays()">
-  <option value="none">One-Time</option>
-  <option value="daily">Everyday</option>
-  <option value="weekly">Specific Days</option>
-  <option value="everyN">Every N Days</option>
-</select><br>
+  <label>Medicine:</label><br>
+  <input type="text" id="medicine"><br>
 
-<div id="daySelector" style="display:none; margin-bottom:10px;">
-  <label>Select Days:</label><br>
-  <label><input type="checkbox" value="Mon">Mon</label>
-  <label><input type="checkbox" value="Tue">Tue</label>
-  <label><input type="checkbox" value="Wed">Wed</label>
-  <label><input type="checkbox" value="Thu">Thu</label>
-  <label><input type="checkbox" value="Fri">Fri</label>
-  <label><input type="checkbox" value="Sat">Sat</label>
-  <label><input type="checkbox" value="Sun">Sun</label><br>
-</div>
+  <label>Schedule Time:</label><br>
+  <input type="datetime-local" id="schedule"><br>
 
-<div id="everyNdays" style="display:none;">
-  <label>Repeat every</label>
-  <input type="number" id="nDays" min="1" value="1" style="width:60px"> day(s)<br>
-</div>
+  <label>Recurrence:</label><br>
+  <select id="recurrence">
+    <option value="01">Everyday</option>
+    <option value="02">Every 2 Days</option>
+    <option value="03">Every 3 Days</option>
+    <option value="04">Weekly</option>
+    <option value="00">One-Time</option>
+  </select><br>
 
-<button onclick="sendSchedule()">Submit Schedule</button>
-<span id="status"></span>
+  <button onclick="sendSchedule()">Submit</button>
+  <p id="status"></p>
 
-<hr>
+  <h3>Uploaded Schedules</h3>
+  <table id="scheduleTable">
+    <thead>
+      <tr>
+        <th>Schedule Time</th>
+        <th>Person Name</th>
+        <th>Medicine</th>
+        <th>Recurrence</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
 
-<input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search...">
-<button onclick="exportExcel()">Export to Excel</button>
-<button onclick="loadSchedule()">Refresh</button>
-<br><br>
-<label>Auto-refresh (sec): </label><input type="number" id="refreshTime" value="60" onchange="restartAutoRefresh()" style="width:60px">
+  <script>
+    const apiKey = 'ALB6HK9T805Q8WJQ';
+    const channelId = '3008675'; // Replace with your ThingSpeak channel ID
 
-<table id="dataTable">
-  <thead>
-    <tr>
-      <th>Schedule Time</th>
-      <th>Person Name</th>
-      <th>Medicine</th>
-      <th>Recurrence</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody id="scheduleTable"></tbody>
-</table>
+    function asciiEncode(str) {
+      return Array.from(str)
+        .map(c => c.charCodeAt(0).toString().padStart(3, '0'))
+        .join('');
+    }
 
-<script>
-const channelID = '3008675';
-const apiKey = 'ALB6HK9T805Q8WJQ';
-const readAPIKey = 'FKJ1TPALPIP7H9S8'; // if needed, else leave empty
-let fullData = [], timer;
+    function buildTLV(epoch, name, med, recurrence) {
+      const nameEncoded = asciiEncode(name);
+      const medEncoded = asciiEncode(med);
 
-// Encode each char as 3-digit padded ASCII code, no delimiter
-function asciiEncode(str) {
-  return Array.from(str).map(c => c.charCodeAt(0).toString().padStart(3, '0')).join('');
-}
+      const tlv =
+        '01' + epoch.toString().length.toString().padStart(2, '0') + epoch +
+        '02' + nameEncoded.length.toString().padStart(2, '0') + nameEncoded +
+        '03' + medEncoded.length.toString().padStart(2, '0') + medEncoded +
+        '04' + recurrence.length.toString().padStart(2, '0') + recurrence;
 
-// Decode string by reading every 3 digits as one char code
-function asciiDecode(str) {
-  let result = '';
-  for (let i = 0; i < str.length; i += 3) {
-    const code = parseInt(str.substr(i, 3));
-    result += String.fromCharCode(code);
-  }
-  return result;
-}
+      return tlv;
+    }
 
-// Build TLV string with tag, length, value
-function toTLV(epoch, name, med, recurrence) {
-  const t1 = `T01L${epoch.toString().length}V${epoch}`;
-  const t2 = `T02L${asciiEncode(name).length}V${asciiEncode(name)}`;
-  const t3 = `T03L${asciiEncode(med).length}V${asciiEncode(med)}`;
-  const t4 = `T04L${recurrence.length}V${recurrence}`;
-  return t1 + t2 + t3 + t4;
-}
+    function sendSchedule() {
+      const person = document.getElementById('person').value.trim();
+      const medicine = document.getElementById('medicine').value.trim();
+      const scheduleInput = document.getElementById('schedule').value;
+      const recurrence = document.getElementById('recurrence').value;
+      const status = document.getElementById('status');
 
-// Parse TLV string back to object
-function parseTLV(tlv) {
-  let i = 0, data = {};
-  while (i < tlv.length) {
-    const tag = tlv.slice(i, i + 3);
-    i += 3;
-    const lenEnd = tlv.indexOf('V', i);
-    const len = parseInt(tlv.slice(i + 1, lenEnd));
-    i = lenEnd + 1;
-    const value = tlv.slice(i, i + len);
-    i += len;
-    if (tag === 'T01') data.epoch = value;
-    else if (tag === 'T02') data.person = asciiDecode(value);
-    else if (tag === 'T03') data.medicine = asciiDecode(value);
-    else if (tag === 'T04') data.recurrence = value;
-  }
-  return data;
-}
-
-// Show/hide recurrence option inputs
-function toggleDays() {
-  const val = document.getElementById('recurrenceType').value;
-  document.getElementById('daySelector').style.display = val === 'weekly' ? 'block' : 'none';
-  document.getElementById('everyNdays').style.display = val === 'everyN' ? 'block' : 'none';
-}
-
-// Submit new schedule
-function sendSchedule() {
-  const person = document.getElementById('person').value.trim();
-  const medicine = document.getElementById('medicine').value.trim();
-  const scheduleInput = document.getElementById('schedule').value;
-  const status = document.getElementById('status');
-
-  if (!person || !medicine || !scheduleInput) {
-    status.style.color = 'red';
-    status.textContent = "Please fill in all fields.";
-    return;
-  }
-
-  const epoch = Math.floor(new Date(scheduleInput).getTime() / 1000);
-  const recurrenceType = document.getElementById('recurrenceType').value;
-  let recurrence = 'none';
-
-  if (recurrenceType === 'weekly') {
-    const days = [...document.querySelectorAll('#daySelector input:checked')].map(cb => cb.value);
-    recurrence = 'weekly:' + days.join(',');
-  } else if (recurrenceType === 'everyN') {
-    recurrence = 'everyN:' + document.getElementById('nDays').value;
-  } else if (recurrenceType === 'daily') {
-    recurrence = 'daily';
-  }
-
-  const tlv = toTLV(epoch, person, medicine, recurrence);
-  const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${encodeURIComponent(tlv)}`;
-
-  fetch(url)
-    .then(res => res.text())
-    .then(data => {
-      if (parseInt(data) > 0) {
-        status.style.color = 'green';
-        status.textContent = `Schedule uploaded! Entry ID: ${data}`;
-        document.getElementById('person').value = '';
-        document.getElementById('medicine').value = '';
-        document.getElementById('schedule').value = '';
-        loadSchedule();
-      } else {
-        status.style.color = 'red';
-        status.textContent = "Failed to upload. Please try again.";
+      if (!person || !medicine || !scheduleInput) {
+        status.textContent = "Please fill in all fields.";
+        return;
       }
-    })
-    .catch(err => {
-      status.style.color = 'red';
-      status.textContent = "Error: " + err.message;
-    });
-}
 
-// Load schedules from ThingSpeak
-function loadSchedule() {
-  const url = `https://api.thingspeak.com/channels/${channelID}/fields/1.json?results=100${readAPIKey ? '&api_key=' + readAPIKey : ''}`;
-  fetch(url)
-    .then(r => r.json())
-    .then(json => {
-      fullData = json.feeds.reverse().map(f => {
-        const parsed = parseTLV(f.field1 || '');
-        return {
-          time: parsed.epoch ? new Date(+parsed.epoch * 1000).toLocaleString() : '',
-          person: parsed.person || '',
-          medicine: parsed.medicine || '',
-          recurrence: parsed.recurrence || 'One-Time',
-          entry_id: f.entry_id,
-          raw_epoch: parsed.epoch
-        };
-      }).filter(d => d.person && d.medicine);
-      renderTable(fullData);
-    })
-    .catch(err => {
-      console.error("Failed to load schedules:", err);
-    });
-}
+      const epoch = Math.floor(new Date(scheduleInput).getTime() / 1000);
+      const tlv = buildTLV(epoch, person, medicine, recurrence);
 
-// Render schedule table
-function renderTable(data) {
-  const table = document.getElementById('scheduleTable');
-  table.innerHTML = '';
-  data.forEach((d, i) => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>${d.time}</td>
-      <td>${d.person}</td>
-      <td>${d.medicine}</td>
-      <td>${d.recurrence}</td>
-      <td class="actions"><button onclick="deleteEntry(${i})">Delete</button></td>`;
-    table.appendChild(tr);
-  });
-}
+      const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${tlv}`;
+      fetch(url)
+        .then(res => res.text())
+        .then(data => {
+          if (parseInt(data) > 0) {
+            status.textContent = "Schedule uploaded!";
+            fetchSchedules(); // refresh table
+          } else {
+            status.textContent = "Upload failed. Try again.";
+          }
+        })
+        .catch(err => status.textContent = "Error: " + err);
+    }
 
-// Delete entry (note: ThingSpeak doesn't support delete via API, so this just clears the field by sending empty)
-function deleteEntry(index) {
-  if (!confirm("Delete this entry?")) return;
-  const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=`;
-  fetch(url)
-    .then(() => {
-      fullData.splice(index, 1);
-      renderTable(fullData);
-    })
-    .catch(err => {
-      alert("Failed to delete: " + err.message);
-    });
-}
+    function decodeTLV(tlv) {
+      const tagMap = {};
+      let i = 0;
 
-// Filter table by search input
-function filterTable() {
-  const v = document.getElementById('searchInput').value.toLowerCase();
-  const filtered = fullData.filter(d =>
-    d.person.toLowerCase().includes(v) ||
-    d.medicine.toLowerCase().includes(v) ||
-    d.time.toLowerCase().includes(v) ||
-    d.recurrence.toLowerCase().includes(v)
-  );
-  renderTable(filtered);
-}
+      while (i < tlv.length) {
+        const tag = tlv.substr(i, 2);
+        const len = parseInt(tlv.substr(i + 2, 2));
+        const val = tlv.substr(i + 4, len);
+        tagMap[tag] = val;
+        i += 4 + len;
+      }
 
-// Export table data to Excel .xlsx file
-function exportExcel() {
-  const data = [["Schedule Time", "Person Name", "Medicine", "Recurrence"]];
-  fullData.forEach(d => data.push([d.time, d.person, d.medicine, d.recurrence]));
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(data);
-  XLSX.utils.book_append_sheet(wb, ws, "Medicine Schedule");
-  XLSX.writeFile(wb, "Medicine_Schedule.xlsx");
-}
+      return tagMap;
+    }
 
-// Auto-refresh setup
-function restartAutoRefresh() {
-  clearInterval(timer);
-  const sec = parseInt(document.getElementById('refreshTime').value);
-  if (sec > 0) {
-    timer = setInterval(loadSchedule, sec * 1000);
-  }
-}
+    function asciiDecode(str) {
+      let result = '';
+      for (let i = 0; i < str.length; i += 3) {
+        result += String.fromCharCode(parseInt(str.substr(i, 3)));
+      }
+      return result;
+    }
 
-window.onload = () => {
-  toggleDays();
-  loadSchedule();
-  restartAutoRefresh();
-};
-</script>
+    function recurrenceLabel(code) {
+      const map = {
+        '01': 'Everyday',
+        '02': 'Every 2 Days',
+        '03': 'Every 3 Days',
+        '04': 'Weekly',
+        '00': 'One-Time'
+      };
+      return map[code] || 'Unknown';
+    }
+
+    function fetchSchedules() {
+      const url = `https://api.thingspeak.com/channels/${channelId}/fields/1.json?results=20`;
+
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+          const tableBody = document.querySelector("#scheduleTable tbody");
+          tableBody.innerHTML = "";
+
+          data.feeds.forEach(feed => {
+            if (!feed.field1) return;
+            const tlv = decodeTLV(feed.field1);
+            const time = new Date(parseInt(tlv["01"]) * 1000).toLocaleString();
+            const name = asciiDecode(tlv["02"] || '');
+            const med = asciiDecode(tlv["03"] || '');
+            const recurrence = recurrenceLabel(tlv["04"] || '00');
+
+            const row = document.createElement("tr");
+            row.innerHTML = `<td>${time}</td><td>${name}</td><td>${med}</td><td>${recurrence}</td>`;
+            tableBody.appendChild(row);
+          });
+        });
+    }
+
+    fetchSchedules(); // initial fetch
+    setInterval(fetchSchedules, 15000); // refresh every 15 seconds
+  </script>
 
 </body>
 </html>
