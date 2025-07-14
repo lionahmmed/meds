@@ -21,32 +21,52 @@
 
 <h2>Medicine Scheduler Dashboard</h2>
 
-<!-- Uploader Form -->
 <label>Person Name:</label><br>
 <input type="text" id="person"><br>
 <label>Medicine:</label><br>
 <input type="text" id="medicine"><br>
 <label>Schedule Time:</label><br>
 <input type="datetime-local" id="schedule"><br>
-<button onclick="sendSchedule()">➕ Submit Schedule</button>
+
+<label>Recurrence:</label><br>
+<select id="recurrenceType" onchange="toggleDays()">
+  <option value="none">One-Time</option>
+  <option value="daily">Everyday</option>
+  <option value="weekly">Specific Days</option>
+  <option value="everyN">Every N Days</option>
+</select><br>
+
+<div id="daySelector" style="display:none; margin-bottom:10px;">
+  <label>Select Days:</label><br>
+  <label><input type="checkbox" value="Mon">Mon</label>
+  <label><input type="checkbox" value="Tue">Tue</label>
+  <label><input type="checkbox" value="Wed">Wed</label>
+  <label><input type="checkbox" value="Thu">Thu</label>
+  <label><input type="checkbox" value="Fri">Fri</label>
+  <label><input type="checkbox" value="Sat">Sat</label>
+  <label><input type="checkbox" value="Sun">Sun</label><br>
+</div>
+<div id="everyNdays" style="display:none;">
+  <label>Repeat every</label>
+  <input type="number" id="nDays" min="1" value="1" style="width:60px"> day(s)<br>
+</div>
+
+<button onclick="sendSchedule()">Submit Schedule</button>
 <span id="status"></span>
-
 <hr>
-
-<!-- Controls -->
-<input type="text" id="searchInput" onkeyup="filterTable()" placeholder="🔍 Search...">
-<button onclick="exportExcel()">📥 Export to Excel</button>
-<button onclick="loadSchedule()">🔄 Refresh</button>
+<input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search...">
+<button onclick="exportExcel()">Export to Excel</button>
+<button onclick="loadSchedule()">Refresh</button>
 <br><br>
 <label>Auto-refresh (sec): </label><input type="number" id="refreshTime" value="60" onchange="restartAutoRefresh()" style="width:60px">
 
-<!-- Table -->
 <table id="dataTable">
   <thead>
     <tr>
       <th>Schedule Time</th>
       <th>Person Name</th>
       <th>Medicine</th>
+      <th>Recurrence</th>
       <th>Actions</th>
     </tr>
   </thead>
@@ -56,31 +76,21 @@
 <script>
 const channelID = '3008675';
 const apiKey = 'ALB6HK9T805Q8WJQ';
-const readAPIKey = 'FKJ1TPALPIP7H9S8'; // Optional if private
+const readAPIKey = 'FKJ1TPALPIP7H9S8'; 
 let fullData = [], timer;
 
-// ===== TLV + ASCII Encoding =====
 function asciiEncode(str) {
-  return Array.from(str).map(c => {
-    const code = c.charCodeAt(0);
-    return code < 100 ? ('0' + code).slice(-2) : '' + code;
-  }).join('');
+  return Array.from(str).map(c => c.charCodeAt(0)).join("");
 }
 function asciiDecode(str) {
-  let result = '', i = 0;
-  while (i < str.length) {
-    const sub = str.slice(i, i + 3);
-    const ch = String.fromCharCode(parseInt(sub));
-    result += ch;
-    i += 3;
-  }
-  return result;
+  return str.match(/\d{2,3}/g).map(c => String.fromCharCode(+c)).join('');
 }
-function toTLV(epoch, name, med) {
+function toTLV(epoch, name, med, recurrence) {
   const t1 = `T01L${epoch.toString().length}V${epoch}`;
   const t2 = `T02L${asciiEncode(name).length}V${asciiEncode(name)}`;
   const t3 = `T03L${asciiEncode(med).length}V${asciiEncode(med)}`;
-  return t1 + t2 + t3;
+  const t4 = `T04L${recurrence.length}V${recurrence}`;
+  return t1 + t2 + t3 + t4;
 }
 function parseTLV(tlv) {
   let i = 0, data = {};
@@ -93,51 +103,56 @@ function parseTLV(tlv) {
     if (tag === 'T01') data.epoch = value;
     else if (tag === 'T02') data.person = asciiDecode(value);
     else if (tag === 'T03') data.medicine = asciiDecode(value);
+    else if (tag === 'T04') data.recurrence = value;
   }
   return data;
 }
-
-// ===== Form Submission =====
 function sendSchedule() {
   const person = document.getElementById('person').value.trim();
   const medicine = document.getElementById('medicine').value.trim();
   const scheduleInput = document.getElementById('schedule').value;
   const status = document.getElementById('status');
-
   if (!person || !medicine || !scheduleInput) {
-    status.textContent = "❌ Fill all fields!";
+    status.textContent = "Fill all fields!";
     return;
   }
-
   const epoch = Math.floor(new Date(scheduleInput).getTime() / 1000);
-  const tlv = toTLV(epoch, person, medicine);
+  const recurrenceType = document.getElementById('recurrenceType').value;
+  let recurrence = 'none';
+  if (recurrenceType === 'weekly') {
+    const days = [...document.querySelectorAll('#daySelector input:checked')].map(cb => cb.value);
+    recurrence = 'weekly:' + days.join(',');
+  } else if (recurrenceType === 'everyN') {
+    recurrence = 'everyN:' + document.getElementById('nDays').value;
+  } else if (recurrenceType === 'daily') {
+    recurrence = 'daily';
+  }
+  const tlv = toTLV(epoch, person, medicine, recurrence);
   const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${encodeURIComponent(tlv)}`;
-
   fetch(url)
     .then(res => res.text())
     .then(data => {
       if (parseInt(data) > 0) {
-        status.textContent = "✅ Uploaded! ID: " + data;
+        status.textContent = "Uploaded! ID: " + data;
         document.getElementById('person').value = '';
         document.getElementById('medicine').value = '';
         document.getElementById('schedule').value = '';
         loadSchedule();
       } else {
-        status.textContent = "❌ Upload failed!";
+        status.textContent = "Upload failed!";
       }
     });
 }
-
-// ===== Load + Display Schedule =====
 function loadSchedule() {
   const url = `https://api.thingspeak.com/channels/${channelID}/fields/1.json?results=100${readAPIKey ? '&api_key=' + readAPIKey : ''}`;
   fetch(url).then(r => r.json()).then(json => {
-    fullData = json.feeds.reverse().map((f, i) => {
+    fullData = json.feeds.reverse().map(f => {
       const parsed = parseTLV(f.field1 || '');
       return {
         time: new Date(+parsed.epoch * 1000).toLocaleString(),
         person: parsed.person || '',
         medicine: parsed.medicine || '',
+        recurrence: parsed.recurrence || 'One-Time',
         entry_id: f.entry_id,
         raw_epoch: parsed.epoch
       };
@@ -145,34 +160,20 @@ function loadSchedule() {
     renderTable(fullData);
   });
 }
-
 function renderTable(data) {
   const table = document.getElementById('scheduleTable');
   table.innerHTML = '';
   data.forEach((d, i) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><input type="datetime-local" value="${toDatetimeLocal(+d.raw_epoch * 1000)}" onchange="editField(${i}, 'time', this.value)"></td>
-      <td><input value="${d.person}" onchange="editField(${i}, 'person', this.value)"></td>
-      <td><input value="${d.medicine}" onchange="editField(${i}, 'medicine', this.value)"></td>
-      <td class="actions">
-        <button onclick="deleteEntry(${i})">🗑️ Delete</button>
-      </td>`;
+      <td>${d.time}</td>
+      <td>${d.person}</td>
+      <td>${d.medicine}</td>
+      <td>${d.recurrence}</td>
+      <td class="actions"><button onclick="deleteEntry(${i})">Delete</button></td>`;
     table.appendChild(tr);
   });
 }
-
-// ===== Editing =====
-function editField(index, field, value) {
-  if (field === 'time') {
-    fullData[index].raw_epoch = Math.floor(new Date(value).getTime() / 1000);
-    fullData[index].time = new Date(fullData[index].raw_epoch * 1000).toLocaleString();
-  } else {
-    fullData[index][field] = value;
-  }
-}
-
-// ===== Deletion (by overwriting field with empty string) =====
 function deleteEntry(index) {
   if (!confirm("Delete this entry?")) return;
   const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=`;
@@ -181,8 +182,6 @@ function deleteEntry(index) {
     renderTable(fullData);
   });
 }
-
-// ===== Helpers =====
 function filterTable() {
   const v = document.getElementById('searchInput').value.toLowerCase();
   const f = fullData.filter(d =>
@@ -192,21 +191,22 @@ function filterTable() {
   renderTable(f);
 }
 function exportExcel() {
-  const data = [["Time", "Name", "Medicine"]];
-  fullData.forEach(d => data.push([d.time, d.person, d.medicine]));
+  const data = [["Time", "Name", "Medicine", "Recurrence"]];
+  fullData.forEach(d => data.push([d.time, d.person, d.medicine, d.recurrence]));
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(data);
   XLSX.utils.book_append_sheet(wb, ws, "Schedule");
   XLSX.writeFile(wb, "Medicine_Schedule.xlsx");
 }
-function toDatetimeLocal(ts) {
-  const d = new Date(ts);
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0,16);
-}
 function restartAutoRefresh() {
   clearInterval(timer);
   const sec = parseInt(document.getElementById('refreshTime').value);
   timer = setInterval(loadSchedule, sec * 1000);
+}
+function toggleDays() {
+  const val = document.getElementById('recurrenceType').value;
+  document.getElementById('daySelector').style.display = val === 'weekly' ? 'block' : 'none';
+  document.getElementById('everyNdays').style.display = val === 'everyN' ? 'block' : 'none';
 }
 window.onload = () => {
   loadSchedule();
