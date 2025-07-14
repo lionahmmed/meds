@@ -12,7 +12,6 @@
     th, td { border: 1px solid #ccc; padding: 8px; font-size: 15px; text-align: center; }
     th { background-color: #f0f0f0; }
     #searchInput { margin-top: 20px; padding: 8px; width: 300px; font-size: 16px; }
-    .pagination button { margin: 2px; padding: 4px 10px; }
     .actions button { padding: 5px 10px; font-size: 12px; }
     #status { margin-top: 10px; font-weight: bold; color: green; }
   </style>
@@ -46,6 +45,7 @@
   <label><input type="checkbox" value="Sat">Sat</label>
   <label><input type="checkbox" value="Sun">Sun</label><br>
 </div>
+
 <div id="everyNdays" style="display:none;">
   <label>Repeat every</label>
   <input type="number" id="nDays" min="1" value="1" style="width:60px"> day(s)<br>
@@ -53,7 +53,9 @@
 
 <button onclick="sendSchedule()">Submit Schedule</button>
 <span id="status"></span>
+
 <hr>
+
 <input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search...">
 <button onclick="exportExcel()">Export to Excel</button>
 <button onclick="loadSchedule()">Refresh</button>
@@ -76,15 +78,25 @@
 <script>
 const channelID = '3008675';
 const apiKey = 'ALB6HK9T805Q8WJQ';
-const readAPIKey = 'FKJ1TPALPIP7H9S8'; 
+const readAPIKey = 'FKJ1TPALPIP7H9S8'; // if needed, else leave empty
 let fullData = [], timer;
 
+// Encode each char as 3-digit padded ASCII code, no delimiter
 function asciiEncode(str) {
-  return Array.from(str).map(c => c.charCodeAt(0)).join("");
+  return Array.from(str).map(c => c.charCodeAt(0).toString().padStart(3, '0')).join('');
 }
+
+// Decode string by reading every 3 digits as one char code
 function asciiDecode(str) {
-  return str.match(/\d{2,3}/g).map(c => String.fromCharCode(+c)).join('');
+  let result = '';
+  for (let i = 0; i < str.length; i += 3) {
+    const code = parseInt(str.substr(i, 3));
+    result += String.fromCharCode(code);
+  }
+  return result;
 }
+
+// Build TLV string with tag, length, value
 function toTLV(epoch, name, med, recurrence) {
   const t1 = `T01L${epoch.toString().length}V${epoch}`;
   const t2 = `T02L${asciiEncode(name).length}V${asciiEncode(name)}`;
@@ -92,14 +104,18 @@ function toTLV(epoch, name, med, recurrence) {
   const t4 = `T04L${recurrence.length}V${recurrence}`;
   return t1 + t2 + t3 + t4;
 }
+
+// Parse TLV string back to object
 function parseTLV(tlv) {
   let i = 0, data = {};
   while (i < tlv.length) {
-    const tag = tlv.slice(i, i + 3); i += 3;
+    const tag = tlv.slice(i, i + 3);
+    i += 3;
     const lenEnd = tlv.indexOf('V', i);
     const len = parseInt(tlv.slice(i + 1, lenEnd));
     i = lenEnd + 1;
-    const value = tlv.slice(i, i + len); i += len;
+    const value = tlv.slice(i, i + len);
+    i += len;
     if (tag === 'T01') data.epoch = value;
     else if (tag === 'T02') data.person = asciiDecode(value);
     else if (tag === 'T03') data.medicine = asciiDecode(value);
@@ -107,18 +123,31 @@ function parseTLV(tlv) {
   }
   return data;
 }
+
+// Show/hide recurrence option inputs
+function toggleDays() {
+  const val = document.getElementById('recurrenceType').value;
+  document.getElementById('daySelector').style.display = val === 'weekly' ? 'block' : 'none';
+  document.getElementById('everyNdays').style.display = val === 'everyN' ? 'block' : 'none';
+}
+
+// Submit new schedule
 function sendSchedule() {
   const person = document.getElementById('person').value.trim();
   const medicine = document.getElementById('medicine').value.trim();
   const scheduleInput = document.getElementById('schedule').value;
   const status = document.getElementById('status');
+
   if (!person || !medicine || !scheduleInput) {
-    status.textContent = "Fill all fields!";
+    status.style.color = 'red';
+    status.textContent = "Please fill in all fields.";
     return;
   }
+
   const epoch = Math.floor(new Date(scheduleInput).getTime() / 1000);
   const recurrenceType = document.getElementById('recurrenceType').value;
   let recurrence = 'none';
+
   if (recurrenceType === 'weekly') {
     const days = [...document.querySelectorAll('#daySelector input:checked')].map(cb => cb.value);
     recurrence = 'weekly:' + days.join(',');
@@ -127,39 +156,56 @@ function sendSchedule() {
   } else if (recurrenceType === 'daily') {
     recurrence = 'daily';
   }
+
   const tlv = toTLV(epoch, person, medicine, recurrence);
   const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=${encodeURIComponent(tlv)}`;
+
   fetch(url)
     .then(res => res.text())
     .then(data => {
       if (parseInt(data) > 0) {
-        status.textContent = "Uploaded! ID: " + data;
+        status.style.color = 'green';
+        status.textContent = `Schedule uploaded! Entry ID: ${data}`;
         document.getElementById('person').value = '';
         document.getElementById('medicine').value = '';
         document.getElementById('schedule').value = '';
         loadSchedule();
       } else {
-        status.textContent = "Upload failed!";
+        status.style.color = 'red';
+        status.textContent = "Failed to upload. Please try again.";
       }
+    })
+    .catch(err => {
+      status.style.color = 'red';
+      status.textContent = "Error: " + err.message;
     });
 }
+
+// Load schedules from ThingSpeak
 function loadSchedule() {
   const url = `https://api.thingspeak.com/channels/${channelID}/fields/1.json?results=100${readAPIKey ? '&api_key=' + readAPIKey : ''}`;
-  fetch(url).then(r => r.json()).then(json => {
-    fullData = json.feeds.reverse().map(f => {
-      const parsed = parseTLV(f.field1 || '');
-      return {
-        time: new Date(+parsed.epoch * 1000).toLocaleString(),
-        person: parsed.person || '',
-        medicine: parsed.medicine || '',
-        recurrence: parsed.recurrence || 'One-Time',
-        entry_id: f.entry_id,
-        raw_epoch: parsed.epoch
-      };
-    }).filter(d => d.person && d.medicine);
-    renderTable(fullData);
-  });
+  fetch(url)
+    .then(r => r.json())
+    .then(json => {
+      fullData = json.feeds.reverse().map(f => {
+        const parsed = parseTLV(f.field1 || '');
+        return {
+          time: parsed.epoch ? new Date(+parsed.epoch * 1000).toLocaleString() : '',
+          person: parsed.person || '',
+          medicine: parsed.medicine || '',
+          recurrence: parsed.recurrence || 'One-Time',
+          entry_id: f.entry_id,
+          raw_epoch: parsed.epoch
+        };
+      }).filter(d => d.person && d.medicine);
+      renderTable(fullData);
+    })
+    .catch(err => {
+      console.error("Failed to load schedules:", err);
+    });
 }
+
+// Render schedule table
 function renderTable(data) {
   const table = document.getElementById('scheduleTable');
   table.innerHTML = '';
@@ -174,41 +220,54 @@ function renderTable(data) {
     table.appendChild(tr);
   });
 }
+
+// Delete entry (note: ThingSpeak doesn't support delete via API, so this just clears the field by sending empty)
 function deleteEntry(index) {
   if (!confirm("Delete this entry?")) return;
   const url = `https://api.thingspeak.com/update?api_key=${apiKey}&field1=`;
-  fetch(url).then(() => {
-    fullData.splice(index, 1);
-    renderTable(fullData);
-  });
+  fetch(url)
+    .then(() => {
+      fullData.splice(index, 1);
+      renderTable(fullData);
+    })
+    .catch(err => {
+      alert("Failed to delete: " + err.message);
+    });
 }
+
+// Filter table by search input
 function filterTable() {
   const v = document.getElementById('searchInput').value.toLowerCase();
-  const f = fullData.filter(d =>
+  const filtered = fullData.filter(d =>
     d.person.toLowerCase().includes(v) ||
     d.medicine.toLowerCase().includes(v) ||
-    d.time.toLowerCase().includes(v));
-  renderTable(f);
+    d.time.toLowerCase().includes(v) ||
+    d.recurrence.toLowerCase().includes(v)
+  );
+  renderTable(filtered);
 }
+
+// Export table data to Excel .xlsx file
 function exportExcel() {
-  const data = [["Time", "Name", "Medicine", "Recurrence"]];
+  const data = [["Schedule Time", "Person Name", "Medicine", "Recurrence"]];
   fullData.forEach(d => data.push([d.time, d.person, d.medicine, d.recurrence]));
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.aoa_to_sheet(data);
-  XLSX.utils.book_append_sheet(wb, ws, "Schedule");
+  XLSX.utils.book_append_sheet(wb, ws, "Medicine Schedule");
   XLSX.writeFile(wb, "Medicine_Schedule.xlsx");
 }
+
+// Auto-refresh setup
 function restartAutoRefresh() {
   clearInterval(timer);
   const sec = parseInt(document.getElementById('refreshTime').value);
-  timer = setInterval(loadSchedule, sec * 1000);
+  if (sec > 0) {
+    timer = setInterval(loadSchedule, sec * 1000);
+  }
 }
-function toggleDays() {
-  const val = document.getElementById('recurrenceType').value;
-  document.getElementById('daySelector').style.display = val === 'weekly' ? 'block' : 'none';
-  document.getElementById('everyNdays').style.display = val === 'everyN' ? 'block' : 'none';
-}
+
 window.onload = () => {
+  toggleDays();
   loadSchedule();
   restartAutoRefresh();
 };
